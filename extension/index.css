@@ -1,0 +1,8 @@
+a:link, a:visited {
+    color: black;
+    text-align: center;
+    text-decoration: none;
+}
+a:hover, a:active {
+    color: green;
+}
