@@ -1,0 +1,49 @@
+{
+  "projects": [
+    {
+      "name": "HomeLab",
+      "urls": [
+        {
+          "name": "",
+          "url": "",
+          "icon": ""
+        },
+        {
+          "name": "",
+          "url": "",
+          "icon": ""
+        }
+      ]
+    },
+    {
+      "name": "Dev",
+      "urls": [
+        {
+          "name": "",
+          "url": "",
+          "icon": ""
+        },
+        {
+          "name": "",
+          "url": "",
+          "icon": ""
+        }
+      ]
+    },
+    {
+      "name": "Stage",
+      "urls": [
+        {
+          "name": "",
+          "url": "",
+          "icon": ""
+        },
+        {
+          "name": "",
+          "url": "",
+          "icon": ""
+        }
+      ]
+    }
+  ]
+}
