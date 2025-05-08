@@ -1,0 +1,49 @@
+server:
+  port: "8080"
+  hashedPassword: "bcrypt_password_here" # Use bcrypt hash for password
+  username: "admin"
+
+groups:
+  - name: "Virtualization"
+    services:
+      - name: "Proxmox Alpha"
+        url: "https://proxmox1.homelab"
+        description: "Main PVE Node"
+        vault_url: "https://vault.homelab/app/pve/#/alpha/credentials"
+      - name: "Proxmox Beta"
+        url: "https://proxmox2.homelab"
+        description: "Backup PVE Node"
+        vault_url: "https://vault.homelab/app/pve/#/alpha/credentials"
+  - name: "Networking"
+    services:
+      - name: "Router"
+        url: "http://192.168.1.1"
+        description: "Network Router Admin"
+      - name: "Pi-Hole"
+        url: "http://pi.hole/admin"
+        description: "DNS Ad Blocker"
+  - name: "Media Servers"
+    services:
+      - name: "Jellyfin"
+        url: "http://jellyfin.homelab:8096"
+        description: "Media Server"
+      - name: "Plex"
+        url: "http://plex.homelab:32400/web"
+        description: "Another Media Server"
+  - name: "Home Automation"
+    services:
+      - name: "Home Assistant"
+        url: "http://homeassistant.homelab:8123"
+        description: "Home Automation Hub"
+
+net_monitor:
+  enable: true
+  default_subnet: "192.168.1.0/24"
+  default_interval: 60 # Interval in seconds for ping scans
+  nmap_scan_enabled: true # Set to true to enable nmap port scanning (requires nmap installed)
+  nmap_default_interval: 300 # Interval in seconds for more intensive nmap scans (e.g., 5 minutes)
+  nmap_command_args: "-T4 -F" # nmap arguments for quick scan (e.g., Fast mode, top 100 ports)
+                               # For a more thorough but slower scan, consider: "-p- -sV"
+                               # For only ping scan and OS detection: "-sn -O" (requires root/admin)
+  nmap_host_timeout: 300 # Seconds before timing out an nmap scan per host
+  ping_timeout_ms: 500 # Milliseconds for individual ping timeout

@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Homelab Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #f0f2f5; 
+            --text-color: #1d2129; 
+            --header-bg: #1877f2; 
+            --header-text: #ffffff;
+            --card-bg-container: #ffffff; 
+            --card-bg-item: #f0f2f5; 
+            --card-shadow: 0 2px 4px rgba(0,0,0,0.1), 0 8px 16px rgba(0,0,0,0.1);
+            --link-color: #1877f2; 
+            --group-title-color: #1d2129; 
+            --input-bg: #f0f2f5; 
+            --input-border: #ccd0d5;
+            --button-bg: transparent; 
+            --button-text: var(--header-text); 
+            --button-hover-bg: rgba(255, 255, 255, 0.1); 
+            --description-text: #606770;
+            --icon-key-color: #606770;
+            --icon-key-border-color: var(--icon-key-color);
+            --tab-bg: var(--header-bg);
+            --tab-text-color: var(--header-text);
+            --tab-active-bg: #ffffff;
+            --tab-active-text-color: var(--header-bg);
+            --table-border-color: var(--input-border);
+            --table-header-bg: var(--card-bg-item);
+            --status-online: #28a745;
+            --status-offline: #dc3545;
+            --status-scanning: #ffc107;
+            --status-error: #fd7e14;
+            --status-unknown: #6c757d;
+        }
+        html.dark {
+            --bg-color: #18191a; 
+            --text-color: #e4e6eb; 
+            --header-bg: #242526; 
+            --header-text: #e4e6eb;
+            --card-bg-container: #242526;
+            --card-bg-item: #18191a; 
+            --card-shadow: 0 2px 4px rgba(0,0,0,0.3), 0 8px 16px rgba(0,0,0,0.3);
+            --link-color: #4599ff; 
+            --group-title-color: #e4e6eb; 
+            --input-bg: #3a3b3c; 
+            --input-border: #3e4042;
+            --button-bg: transparent; 
+            --button-text: var(--header-text); 
+            --button-hover-bg: rgba(0, 0, 0, 0.1); 
+            --description-text: #b0b3b8;
+            --icon-key-color: #b0b3b8;
+            --icon-key-border-color: var(--icon-key-color);
+            --tab-bg: var(--header-bg);
+            --tab-text-color: var(--header-text);
+            --tab-active-bg: #18191a;
+            --tab-active-text-color: var(--header-text);
+            --table-border-color: var(--input-border);
+            --table-header-bg: var(--card-bg-item);
+            --status-online: #33cc55;
+            --status-offline: #ff4455;
+            --status-scanning: #ffdd66;
+            --status-error: #ffaa44;
+            --status-unknown: #8899aa;
+        }
+        * { box-sizing: border-box; }
+        body { 
+            font-family: "Segoe UI Historic", "Segoe UI", Helvetica, Arial, sans-serif; 
+            margin: 0; 
+            background-color: var(--bg-color); 
+            color: var(--text-color); 
+            transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out; 
+            line-height: 1.4; font-size: 14px;
+        }
+        header { 
+            background-color: var(--header-bg); color: var(--header-text); 
+            padding: 0 20px; 
+            display: flex; flex-direction: column; 
+            align-items: stretch; 
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1); position: sticky; top: 0; z-index: 100;
+        }
+        .header-top-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0; 
+        }
+        header h1 { margin: 0; font-size: 1.5rem; font-weight: 600; }
+        
+        nav.tabs {
+            display: flex;
+            justify-content: center; 
+            border-bottom: 1px solid rgba(255,255,255,0.2); 
+        }
+        nav.tabs button {
+            background-color: var(--tab-bg);
+            color: var(--tab-text-color);
+            border: none;
+            padding: 10px 15px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            font-weight: 500;
+            transition: background-color 0.2s ease, color 0.2s ease;
+            border-radius: 5px 5px 0 0; 
+            margin: 0 2px; 
+        }
+        nav.tabs button:hover {
+            background-color: var(--button-hover-bg);
+        }
+        nav.tabs button.active {
+            background-color: var(--tab-active-bg);
+            color: var(--tab-active-text-color);
+            font-weight: 600;
+        }
+
+        .controls { display: flex; align-items: center; gap: 12px; }
+        .search-bar { 
+            padding: 8px 12px; border: 1px solid var(--input-border); border-radius: 20px; 
+            background-color: var(--input-bg); color: var(--text-color); font-size: 0.9rem;
+            min-width: 220px; transition: border-color 0.2s ease, background-color 0.2s ease;
+        }
+        .search-bar:focus { outline: none; border-color: var(--link-color); }
+        .theme-toggle-button { 
+            background-color: var(--button-bg); color: var(--button-text);
+            border: none; border-radius: 50%; cursor: pointer; font-size: 0.9rem;
+            font-weight: 600; transition: background-color 0.2s ease;
+            width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; padding: 0;
+        }
+        .theme-toggle-button:hover { background-color: var(--button-hover-bg); }
+        .theme-toggle-button svg { width: 20px; height: 20px; stroke: var(--button-text); }
+        
+        main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .service-group { 
+            margin-bottom: 24px; background-color: var(--card-bg-container); padding: 16px; 
+            border-radius: 8px; box-shadow: var(--card-shadow);
+        }
+        .service-group h2 { 
+            margin-top: 0; margin-bottom: 16px; color: var(--group-title-color); 
+            border-bottom: 1px solid var(--input-border); padding-bottom: 8px; 
+            font-size: 1.25rem; font-weight: 600;
+        }
+        .services-grid { 
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; 
+        }
+
+        .service-card { 
+            background-color: var(--card-bg-item); 
+            padding: 12px 16px; 
+            border-radius: 6px;
+            border: 1px solid var(--input-border);
+            display: flex; 
+            flex-direction: column; 
+            transition: transform 0.15s ease-out, box-shadow 0.15s ease-out, border-color 0.15s ease-out;
+            color: var(--text-color); 
+        }
+        .service-card:hover { 
+            transform: translateY(-2px); 
+            box-shadow: 0 4px 8px rgba(0,0,0,0.08); 
+        }
+        
+        .service-card-header {
+            display: flex; 
+            align-items: center; 
+            margin-bottom: 6px; 
+        }
+
+        .service-name-link {
+            text-decoration: none;
+            color: var(--link-color); 
+            display: inline-block; 
+        }
+        .service-name-link:hover {
+            text-decoration: underline; 
+        }
+        .service-name-link h3 { 
+            font-size: 1rem; 
+            font-weight: 600;
+            margin: 0; 
+            display: inline; 
+        }
+
+        .vault-key-icon-inline {
+            display: inline-flex; 
+            align-items: center;
+            justify-content: center;
+            width: 1em;
+            height: 1em;
+            margin-left: 0.5em; 
+            color: var(--icon-key-color);
+            text-decoration: none; 
+            flex-shrink: 0;
+            border: 1px solid var(--icon-key-border-color);
+            padding: 0.15em;
+            border-radius: 2px;
+            transition: color 0.2s ease, border-color 0.2s ease;
+        }
+        .vault-key-icon-inline:hover {
+            color: var(--link-color); 
+            border-color: var(--link-color);
+        }
+        .vault-key-icon-inline svg {
+            width: 100%;
+            height: 100%;
+            stroke: currentColor; 
+            fill: none;
+        }
+        
+        .service-description-text { 
+            font-size: 0.875rem; 
+            margin: 0; 
+            color: var(--description-text); 
+        }
+
+        .hidden { display: none !important; }
+        footer { 
+            text-align: center; padding: 16px; margin-top: 24px; 
+            font-size: 0.8rem; color: var(--description-text);
+        }
+        .no-results {
+            padding: 16px; text-align: center;
+            color: var(--description-text); font-style: italic;
+        }
+
+        #net-monitor-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            font-size: 0.9rem;
+        }
+        #net-monitor-table th, #net-monitor-table td {
+            border: 1px solid var(--table-border-color);
+            padding: 8px 12px;
+            text-align: left;
+        }
+        #net-monitor-table th {
+            background-color: var(--table-header-bg);
+            font-weight: 600;
+        }
+        #net-monitor-table tbody tr:nth-child(odd) {
+            background-color: var(--card-bg-item);
+        }
+         html.dark #net-monitor-table tbody tr:nth-child(odd) {
+            background-color: var(--bg-color); 
+        }
+        .status-cell span {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-weight: 500;
+            color: white;
+            display: inline-block;
+            min-width: 60px;
+            text-align: center;
+        }
+        .status-online span { background-color: var(--status-online); }
+        .status-offline span { background-color: var(--status-offline); }
+        .status-scanning span { background-color: var(--status-scanning); color: #333; }
+        .status-error span { background-color: var(--status-error); }
+        .status-unknown span { background-color: var(--status-unknown); }
+        .net-monitor-controls { margin-bottom: 15px; display: flex; align-items: center; gap: 10px; }
+        .net-monitor-controls label { font-weight: 500;}
+        .net-monitor-controls #net-monitor-subnet-display { font-family: monospace; }
+        .net-monitor-controls #net-monitor-interval-display { font-family: monospace; }
+        .net-monitor-controls #net-monitor-status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-left: 5px;
+            background-color: var(--status-offline); /* Default to offline */
+        }
+        .net-monitor-controls #net-monitor-status-indicator.active {
+             background-color: var(--status-online);
+        }
+
+
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-top-row">
+            <h1>Homelab Dashboard</h1>
+            <div class="controls">
+                <input type="text" id="search-input" class="search-bar" placeholder="Search...">
+                <button id="theme-toggle" class="theme-toggle-button" title="Toggle theme"></button>
+            </div>
+        </div>
+        <nav class="tabs">
+            <button class="tab-button active" data-tab="dashboard">Dashboard</button>
+            {{if .NetMonitor.Enable}}
+            <button class="tab-button" data-tab="net-monitor">Net Monitor</button>
+            {{end}}
+        </nav>
+    </header>
+    <main id="main-content">
+        <div id="dashboard" class="tab-content active">
+            {{range .Groups}}
+            <section class="service-group" data-group-name="{{ .Name | ToLower }}" data-searchable-group>
+                <h2>{{.Name}}</h2>
+                <div class="services-grid">
+                    {{range .Services}}
+                    <div class="service-card" data-service-name="{{ .Name | ToLower }}" data-service-description="{{ .Description | ToLower }}" data-searchable-item>
+                        <div class="service-card-header">
+                            <a href="{{.URL}}" target="_blank" class="service-name-link">
+                                <h3>{{.Name}}</h3>
+                            </a>
+                            {{if .VaultURL}}
+                            <a href="{{.VaultURL}}" target="_blank" class="vault-key-icon-inline" title="Open Vault Link">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+                                </svg>
+                            </a>
+                            {{end}}
+                        </div>
+                        {{if .Description}}
+                        <p class="service-description-text">{{.Description}}</p>
+                        {{end}}
+                    </div>
+                    {{else}}
+                    <p class="no-results">No services listed in this group.</p>
+                    {{end}}
+                </div>
+            </section>
+            {{else}}
+            <p class="no-results">No service groups configured.</p>
+            {{end}}
+            <div id="no-dashboard-results" class="no-results hidden">No matching services or groups found.</div>
+        </div>
+
+        {{if .NetMonitor.Enable}}
+        <div id="net-monitor" class="tab-content">
+            <div class="net-monitor-controls">
+                <span>Status: <strong id="net-monitor-active-status">ENABLED</strong></span>
+                <span id="net-monitor-status-indicator" class="active"></span>
+                <span>Subnet: <strong id="net-monitor-subnet-display">{{ .NetMonitor.DefaultSubnet }}</strong></span>
+                <span>Ping Interval: <strong id="net-monitor-interval-display">{{ .NetMonitor.DefaultInterval }}s</strong></span>
+                 {{if .NetMonitor.NmapScanEnabled}}
+                <span>Nmap Interval: <strong id="net-monitor-nmap-interval-display">{{ .NetMonitor.NmapDefaultInterval }}s</strong></span>
+                {{end}}
+            </div>
+            <table id="net-monitor-table">
+                <thead>
+                    <tr>
+                        <th>IP</th>
+                        <th>Hostname</th>
+                        <th>Status</th>
+                        <th>Open Ports (TCP)</th>
+                        <th>Last Seen</th>
+                        <th>Last Nmap Scan</th>
+                    </tr>
+                </thead>
+                <tbody id="net-monitor-table-body" data-searchable-container>
+                    </tbody>
+            </table>
+            <div id="no-net-monitor-results" class="no-results hidden">No matching network devices found.</div>
+            <p id="net-monitor-loading" class="no-results">Loading network status...</p>
+        </div>
+        {{end}}
+    </main>
+    <footer>
+        Homelab Dashboard &bull; Port: {{ .Server.Port }}
+    </footer>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const themeToggleButton = document.getElementById('theme-toggle');
+        const htmlElement = document.documentElement;
+        const searchInput = document.getElementById('search-input');
+        const tabButtons = document.querySelectorAll('.tab-button');
+        const tabContents = document.querySelectorAll('.tab-content');
+        const noDashboardResultsMessage = document.getElementById('no-dashboard-results');
+        const noNetMonitorResultsMessage = document.getElementById('no-net-monitor-results');
+        const netMonitorTableBody = document.getElementById('net-monitor-table-body');
+        const netMonitorLoading = document.getElementById('net-monitor-loading');
+
+        const sunIconSVG = `
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+             <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25M18.364 5.636l-1.591 1.591M21 12h-2.25M18.364 18.364l-1.591-1.591M12 18.75V21M5.636 18.364l1.591-1.591M3 12h2.25M5.636 5.636l1.591 1.591M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
+            </svg>`;
+        const moonIconSVG = `
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+            </svg>`;
+
+        const updateThemeIcon = (theme) => {
+            themeToggleButton.innerHTML = theme === 'dark' ? sunIconSVG : moonIconSVG;
+        };
+        const applyTheme = (theme) => {
+            htmlElement.classList.toggle('dark', theme === 'dark');
+            localStorage.setItem('theme', theme);
+            updateThemeIcon(theme);
+        };
+        let preferredTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        applyTheme(preferredTheme);
+        
+        themeToggleButton.addEventListener('click', () => {
+            applyTheme(htmlElement.classList.contains('dark') ? 'light' : 'dark');
+        });
+
+        function performSearch() {
+            const searchTerm = searchInput.value.toLowerCase().trim();
+            const activeTabContent = document.querySelector('.tab-content.active');
+
+            if (!activeTabContent) return;
+
+            let overallResultsFound = false;
+
+            if (activeTabContent.id === 'dashboard') {
+                activeTabContent.querySelectorAll('[data-searchable-group]').forEach(group => {
+                    const groupName = group.dataset.groupName.toLowerCase();
+                    let groupHasVisibleServices = false;
+                    group.querySelectorAll('[data-searchable-item]').forEach(card => {
+                        const serviceName = card.dataset.serviceName.toLowerCase();
+                        const serviceDesc = (card.dataset.serviceDescription || "").toLowerCase();
+                        const cardIsVisible = serviceName.includes(searchTerm) || serviceDesc.includes(searchTerm);
+                        card.classList.toggle('hidden', !cardIsVisible);
+                        if (cardIsVisible) {
+                            groupHasVisibleServices = true;
+                            overallResultsFound = true;
+                        }
+                    });
+                    const groupIsVisible = groupName.includes(searchTerm) || groupHasVisibleServices;
+                    group.classList.toggle('hidden', !groupIsVisible);
+                    if (groupIsVisible) overallResultsFound = true;
+                });
+                noDashboardResultsMessage.classList.toggle('hidden', overallResultsFound || searchTerm === '');
+                if (noNetMonitorResultsMessage) noNetMonitorResultsMessage.classList.add('hidden');
+            } else if (activeTabContent.id === 'net-monitor' && netMonitorTableBody) {
+                const tableBody = netMonitorTableBody;
+                tableBody.querySelectorAll('[data-searchable-item]').forEach(row => {
+                    let rowTextContent = (row.dataset.searchTextContent || '').toLowerCase();
+                    const rowIsVisible = rowTextContent.includes(searchTerm);
+                    row.classList.toggle('hidden', !rowIsVisible);
+                    if (rowIsVisible) {
+                        overallResultsFound = true;
+                    }
+                });
+                 noNetMonitorResultsMessage.classList.toggle('hidden', overallResultsFound || searchTerm === '');
+                 if(noDashboardResultsMessage) noDashboardResultsMessage.classList.add('hidden');
+            }
+        }
+        
+        function formatTimeAgo(date) {
+            if (!date || new Date(date).getFullYear() < 2000) return "N/A";
+            const seconds = Math.floor((new Date() - new Date(date)) / 1000);
+            let interval = seconds / 31536000;
+            if (interval > 1) return Math.floor(interval) + (Math.floor(interval) === 1 ? " year ago" : " years ago");
+            interval = seconds / 2592000;
+            if (interval > 1) return Math.floor(interval) + (Math.floor(interval) === 1 ? " month ago" : " months ago");
+            interval = seconds / 86400;
+            if (interval > 1) return Math.floor(interval) + (Math.floor(interval) === 1 ? " day ago" : " days ago");
+            interval = seconds / 3600;
+            if (interval > 1) return Math.floor(interval) + (Math.floor(interval) === 1 ? " hour ago" : " hours ago");
+            interval = seconds / 60;
+            if (interval > 1) return Math.floor(interval) + (Math.floor(interval) === 1 ? " minute ago" : " minutes ago");
+            if (seconds < 10) return "Just now";
+            return Math.floor(seconds) + " seconds ago";
+        }
+
+        function updateNetMonitorTable(hosts) {
+            if (!netMonitorTableBody) return;
+            netMonitorTableBody.innerHTML = ''; // Clear existing rows
+            let foundItems = 0;
+
+            if (!hosts || hosts.length === 0) {
+                netMonitorLoading.textContent = 'No hosts data received or subnet not scanned yet.';
+                netMonitorTableBody.innerHTML = '<tr><td colspan="6" class="no-results">No hosts to display. Check subnet or wait for scan.</td></tr>';
+                return;
+            }
+            
+            netMonitorLoading.classList.add('hidden');
+
+            hosts.sort((a, b) => { // Sort by IP address
+                const ipA = a.ip.split('.').map(Number);
+                const ipB = b.ip.split('.').map(Number);
+                for (let i = 0; i < 4; i++) {
+                    if (ipA[i] !== ipB[i]) return ipA[i] - ipB[i];
+                }
+                return 0;
+            });
+
+
+            hosts.forEach(host => {
+                const row = netMonitorTableBody.insertRow();
+                row.setAttribute('data-searchable-item', '');
+                let searchText = `${host.ip || ''} ${host.hostname || ''} ${host.status || ''} ${(host.open_ports || []).join(', ')}`.toLowerCase();
+                row.setAttribute('data-search-text-content', searchText);
+
+                row.insertCell().textContent = host.ip || 'N/A';
+                row.insertCell().textContent = host.hostname || 'N/A';
+                
+                const statusCell = row.insertCell();
+                statusCell.classList.add('status-cell');
+                const statusSpan = document.createElement('span');
+                statusSpan.textContent = host.status || 'Unknown';
+                statusCell.classList.add(`status-${(host.status || 'unknown').toLowerCase()}`);
+                statusCell.appendChild(statusSpan);
+
+                row.insertCell().textContent = (host.open_ports && host.open_ports.length > 0) ? host.open_ports.join(', ') : '-';
+                row.insertCell().textContent = formatTimeAgo(host.last_seen);
+                row.insertCell().textContent = formatTimeAgo(host.last_nmap_scan); 
+                foundItems++;
+            });
+            
+            if (foundItems === 0 && hosts.length > 0) { // If hosts array isn't empty but filter makes it 0
+                 netMonitorTableBody.innerHTML = '<tr><td colspan="6" class="no-results">No hosts match your current filter.</td></tr>';
+            } else if (hosts.length === 0) { // If API returns empty array initially
+                netMonitorTableBody.innerHTML = '<tr><td colspan="6" class="no-results">No hosts detected in the configured subnet yet.</td></tr>';
+            }
+            performSearch(); // Re-apply search after table update
+        }
+
+        async function fetchNetMonitorData() {
+            if (!document.getElementById('net-monitor')?.classList.contains('active')) {
+                // Don't fetch if tab is not active, unless it's the first load for this tab
+                if (netMonitorTableBody && netMonitorTableBody.children.length === 0) {
+                     // allow first fetch even if not active yet, to populate
+                } else {
+                    return;
+                }
+            }
+            try {
+                const response = await fetch('/api/netmonitor/status');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                updateNetMonitorTable(data);
+            } catch (error) {
+                console.error("Failed to fetch network monitor data:", error);
+                if (netMonitorTableBody) {
+                     netMonitorTableBody.innerHTML = `<tr><td colspan="6" class="no-results">Error loading network status: ${error.message}</td></tr>`;
+                }
+                if(netMonitorLoading) netMonitorLoading.textContent = `Error: ${error.message}`;
+            }
+        }
+        
+        let netMonitorIntervalId = null;
+
+        tabButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                const targetTabId = button.dataset.tab;
+
+                tabButtons.forEach(btn => btn.classList.remove('active'));
+                button.classList.add('active');
+
+                tabContents.forEach(content => {
+                    content.classList.toggle('active', content.id === targetTabId);
+                });
+
+                if (targetTabId === 'net-monitor') {
+                    if (netMonitorLoading) netMonitorLoading.classList.remove('hidden');
+                    fetchNetMonitorData(); // Fetch immediately on tab switch
+                    if (!netMonitorIntervalId) { // Start interval if not already running
+                        // Update interval based on config, defaulting to 5s if not available.
+                        const intervalSeconds = parseInt(document.getElementById('net-monitor-interval-display')?.textContent || '5', 10);
+                        netMonitorIntervalId = setInterval(fetchNetMonitorData, Math.max(intervalSeconds, 2) * 1000);
+                    }
+                } else {
+                    if (netMonitorIntervalId) {
+                       // clearInterval(netMonitorIntervalId); // Optionally clear if you want to stop updates when tab is not active
+                       // netMonitorIntervalId = null;
+                    }
+                }
+                performSearch(); 
+            });
+        });
+
+        if (searchInput) {
+            searchInput.addEventListener('input', performSearch);
+        }
+        
+        // Initial setup for net monitor if its tab might be active by default (or to pre-load)
+        // Check if the net monitor tab exists and is enabled by Go template
+        const netMonitorTabElement = document.getElementById('net-monitor');
+        if (netMonitorTabElement) {
+            // Set an interval to always update netmonitor data regardless of tab, or only when active
+            // For this example, we'll fetch once and then rely on tab activation to start regular polling.
+            // If you want it to update in the background always, start the interval here.
+            // fetchNetMonitorData(); // Initial fetch for when page loads
+             const initialIntervalSeconds = parseInt(document.getElementById('net-monitor-interval-display')?.textContent || '5', 10);
+             netMonitorIntervalId = setInterval(fetchNetMonitorData, Math.max(initialIntervalSeconds, 2) * 1000);
+
+
+            // If net-monitor tab is the active one on load (e.g. after a refresh or direct link)
+            if (netMonitorTabElement.classList.contains('active')) {
+                 if (netMonitorLoading) netMonitorLoading.classList.remove('hidden');
+                 fetchNetMonitorData();
+                 // Interval is already started above
+            }
+        }
+        
+        performSearch();
+    });
+    </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: homelab_dashboard
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dashboard/config.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
