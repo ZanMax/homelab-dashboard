@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
 )
 
 const (
@@ -24,33 +27,44 @@ const (
 type NetMonitorConfig struct {
 	Enable              bool   `yaml:"enable"`
 	DefaultSubnet       string `yaml:"default_subnet"`
-	DefaultInterval     int    `yaml:"default_interval"`      // Basic ping scan interval in seconds
-	NmapScanEnabled     bool   `yaml:"nmap_scan_enabled"`     // Enable nmap for detailed scans
-	NmapDefaultInterval int    `yaml:"nmap_default_interval"` // Nmap scan interval in seconds
-	NmapCommandArgs     string `yaml:"nmap_command_args"`     // e.g., "-T4 -F"
-	NmapHostTimeout     int    `yaml:"nmap_host_timeout"`     // Timeout for nmap scan per host
-	PingTimeoutMs       int    `yaml:"ping_timeout_ms"`       // Ping timeout in milliseconds
+	DefaultInterval     int    `yaml:"default_interval"`
+	NmapScanEnabled     bool   `yaml:"nmap_scan_enabled"`
+	NmapDefaultInterval int    `yaml:"nmap_default_interval"`
+	NmapCommandArgs     string `yaml:"nmap_command_args"`
+	NmapHostTimeout     int    `yaml:"nmap_host_timeout"`
+	PingTimeoutMs       int    `yaml:"ping_timeout_ms"`
+	PortScanEnabled     bool   `yaml:"port_scan_enabled"`
+	PortScanInterval    int    `yaml:"port_scan_interval"`
+	PortScanTimeoutMs   int    `yaml:"port_scan_timeout_ms"`
+	OfflineThreshold    int    `yaml:"offline_threshold"`
 }
 
 type MonitoredHost struct {
 	IP           string    `json:"ip"`
-	Hostname     string    `json:"hostname"`
 	Status       string    `json:"status"`
 	LastSeen     time.Time `json:"last_seen"`
 	OpenPorts    []string  `json:"open_ports,omitempty"`
-	LastNmapScan time.Time `json:"last_nmap_scan,omitempty"`
+	LastPortScan time.Time `json:"last_port_scan,omitempty"`
+	missCount    int
 	mu           sync.RWMutex
 }
 
 type NetworkMonitor struct {
 	config         NetMonitorConfig
-	hosts          map[string]*MonitoredHost // IP -> Host
+	hosts          map[string]*MonitoredHost
 	mu             sync.RWMutex
 	stopChan       chan struct{}
 	wg             sync.WaitGroup
 	nmapPath       string
 	isNmapScanning bool
 	nmapMu         sync.Mutex
+	isPortScanning bool
+	portScanMu     sync.Mutex
+}
+
+type icmpScanResult struct {
+	Alive bool
+	RTT   time.Duration
 }
 
 var globalNetworkMonitor *NetworkMonitor
@@ -66,23 +80,32 @@ func NewNetworkMonitor(cfg NetMonitorConfig) (*NetworkMonitor, error) {
 		path, err := exec.LookPath("nmap")
 		if err != nil {
 			log.Printf("Warning: nmap executable not found, nmap scans will be disabled. Error: %v", err)
-			nm.config.NmapScanEnabled = false // Disable if not found
+			nm.config.NmapScanEnabled = false
 		} else {
 			nm.nmapPath = path
 			log.Printf("Found nmap at: %s", nm.nmapPath)
 		}
 	}
 	if nm.config.PingTimeoutMs <= 0 {
-		nm.config.PingTimeoutMs = 500 // Default ping timeout
+		nm.config.PingTimeoutMs = 500
 	}
 	if nm.config.DefaultInterval <= 0 {
-		nm.config.DefaultInterval = 5 // Default ping interval
+		nm.config.DefaultInterval = 5
 	}
 	if nm.config.NmapDefaultInterval <= 0 {
-		nm.config.NmapDefaultInterval = 300 // Default nmap interval
+		nm.config.NmapDefaultInterval = 300
 	}
 	if nm.config.NmapHostTimeout <= 0 {
-		nm.config.NmapHostTimeout = 300 // Default nmap host timeout
+		nm.config.NmapHostTimeout = 300
+	}
+	if nm.config.PortScanInterval <= 0 {
+		nm.config.PortScanInterval = 300
+	}
+	if nm.config.PortScanTimeoutMs <= 0 {
+		nm.config.PortScanTimeoutMs = 2000
+	}
+	if nm.config.OfflineThreshold <= 0 {
+		nm.config.OfflineThreshold = 3
 	}
 
 	globalNetworkMonitor = nm
@@ -119,7 +142,7 @@ func (nm *NetworkMonitor) runPingScheduler() {
 	ticker := time.NewTicker(time.Duration(nm.config.DefaultInterval) * time.Second)
 	defer ticker.Stop()
 
-	nm.performPingScan() // Initial scan
+	nm.performPingScan()
 
 	for {
 		select {
@@ -139,7 +162,7 @@ func (nm *NetworkMonitor) runNmapScheduler() {
 	ticker := time.NewTicker(time.Duration(nm.config.NmapDefaultInterval) * time.Second)
 	defer ticker.Stop()
 
-	nm.performNmapScanForAllOnlineHosts() // Initial scan
+	nm.performNmapScanForAllOnlineHosts()
 
 	for {
 		select {
@@ -159,11 +182,10 @@ func (nm *NetworkMonitor) GetHostStatus() []MonitoredHost {
 		host.mu.RLock()
 		statuses = append(statuses, MonitoredHost{
 			IP:           host.IP,
-			Hostname:     host.Hostname,
 			Status:       host.Status,
 			LastSeen:     host.LastSeen,
-			OpenPorts:    append([]string{}, host.OpenPorts...), // Create a copy
-			LastNmapScan: host.LastNmapScan,
+			OpenPorts:    append([]string{}, host.OpenPorts...),
+			LastPortScan: host.LastPortScan,
 		})
 		host.mu.RUnlock()
 	}
@@ -178,30 +200,25 @@ func getIPsFromSubnet(subnetCIDR string) ([]net.IP, error) {
 
 	var ips []net.IP
 	for ip := ipAddr.Mask(ipNet.Mask); ipNet.Contains(ip); incIP(ip) {
-		// Create a copy of the IP to add to the slice
 		ipCopy := make(net.IP, len(ip))
 		copy(ipCopy, ip)
 		ips = append(ips, ipCopy)
 	}
 
-	// Remove network and broadcast addresses for typical scanning use cases
-	if len(ips) > 2 { // Only if there are enough IPs to remove them
-		// Check if the subnet is not a /32 or /31 for IPv4
+	if len(ips) > 2 {
 		ones, bits := ipNet.Mask.Size()
-		if bits == 32 && (ones < 31 || ones == 32 && len(ips) == 1) { // For IPv4
-			if len(ips) > 1 { // Avoid panic on very small subnets like /32
-				ips = ips[1:] // Remove network address
+		if bits == 32 && (ones < 31 || ones == 32 && len(ips) == 1) {
+			if len(ips) > 1 {
+				ips = ips[1:]
 			}
 			if len(ips) > 1 {
-				ips = ips[:len(ips)-1] // Remove broadcast address
+				ips = ips[:len(ips)-1]
 			}
-		} else if bits == 128 && ones < 127 { // For IPv6, typically no broadcast, network often not scanned.
+		} else if bits == 128 && ones < 127 {
 			if len(ips) > 1 {
 				ips = ips[1:]
 			}
 		}
-	} else if len(ips) == 1 { // For /32 on IPv4 or /128 on IPv6
-		// Keep the single IP
 	}
 
 	return ips, nil
@@ -216,103 +233,258 @@ func incIP(ip net.IP) {
 	}
 }
 
+const maxConcurrentPings = 50
+const maxConcurrentPortScanHosts = 10
+const maxConcurrentDialsPerHost = 30
+
+var defaultScanPorts = []int{
+	21, 22, 23, 25, 53, 80, 110, 111, 135, 139,
+	143, 443, 445, 465, 514, 587, 631, 636, 993,
+	995, 1080, 1433, 1521, 1723, 1883, 2049, 2181,
+	2375, 2376, 3000, 3306, 3389, 4443, 5000, 5060,
+	5432, 5672, 5900, 5984, 6379, 6443, 7070, 7443,
+	8000, 8080, 8081, 8083, 8086, 8088, 8123, 8200,
+	8443, 8444, 8500, 8834, 8888, 8883, 9000, 9090,
+	9091, 9092, 9100, 9200, 9300, 9443, 10000, 10250,
+	11211, 15672, 19132, 25565, 27017, 28017, 32400,
+	51820, 54321,
+}
+
 func (nm *NetworkMonitor) performPingScan() {
-	log.Println("Performing ping scan for subnet:", nm.config.DefaultSubnet)
+	log.Println("Performing host discovery for subnet:", nm.config.DefaultSubnet)
 	ips, err := getIPsFromSubnet(nm.config.DefaultSubnet)
 	if err != nil {
 		log.Printf("Error getting IPs from subnet %s: %v", nm.config.DefaultSubnet, err)
 		return
 	}
 
-	var scanWg sync.WaitGroup
-	for _, ip := range ips {
-		scanWg.Add(1)
-		go func(ipAddr net.IP) {
-			defer scanWg.Done()
-			nm.pingHost(ipAddr.String())
-		}(ip)
+	ipStrs := make([]string, len(ips))
+	for i, ip := range ips {
+		ipStrs[i] = ip.String()
 	}
-	scanWg.Wait()
-	log.Println("Ping scan finished.")
+
+	results, err := nm.icmpBatchScan(ipStrs)
+	if err != nil {
+		log.Printf("ICMP scan failed (%v), skipping to TCP probes", err)
+		results = make(map[string]icmpScanResult, len(ipStrs))
+	}
+
+	icmpAlive := 0
+	for _, r := range results {
+		if r.Alive {
+			icmpAlive++
+		}
+	}
+
+	var missedIPs []string
+	for _, ip := range ipStrs {
+		if !results[ip].Alive {
+			missedIPs = append(missedIPs, ip)
+		}
+	}
+
+	if len(missedIPs) > 0 {
+		tcpResults := nm.tcpProbeHosts(missedIPs)
+		tcpAlive := 0
+		for ip, res := range tcpResults {
+			if res.Alive {
+				results[ip] = res
+				tcpAlive++
+			}
+		}
+		log.Printf("Host discovery: ICMP found %d, TCP probe found %d more", icmpAlive, tcpAlive)
+	} else {
+		log.Printf("Host discovery: ICMP found %d", icmpAlive)
+	}
+
+	now := time.Now()
+	for _, ipStr := range ipStrs {
+		nm.mu.RLock()
+		host, exists := nm.hosts[ipStr]
+		nm.mu.RUnlock()
+
+		if !exists {
+			nm.mu.Lock()
+			host, exists = nm.hosts[ipStr]
+			if !exists {
+				host = &MonitoredHost{IP: ipStr, Status: StatusUnknown}
+				nm.hosts[ipStr] = host
+			}
+			nm.mu.Unlock()
+		}
+
+		res := results[ipStr]
+		host.mu.Lock()
+		if host.Status == StatusScanning {
+			host.mu.Unlock()
+			continue
+		}
+		if res.Alive {
+			host.Status = StatusOnline
+			host.LastSeen = now
+			host.missCount = 0
+			host.mu.Unlock()
+		} else {
+			host.missCount++
+			if host.missCount >= nm.config.OfflineThreshold || host.Status == StatusUnknown {
+				host.Status = StatusOffline
+			}
+			host.mu.Unlock()
+		}
+	}
+	log.Println("Host discovery finished.")
+
+	if nm.config.PortScanEnabled {
+		go nm.performTCPPortScan()
+	}
 }
 
-func (nm *NetworkMonitor) pingHost(ipStr string) {
-	nm.mu.RLock()
-	host, exists := nm.hosts[ipStr]
-	nm.mu.RUnlock()
-
-	if !exists {
-		nm.mu.Lock()
-		host = &MonitoredHost{IP: ipStr, Status: StatusUnknown}
-		nm.hosts[ipStr] = host
-		nm.mu.Unlock()
+func (nm *NetworkMonitor) icmpBatchScan(ips []string) (map[string]icmpScanResult, error) {
+	conn, err := icmp.ListenPacket("udp4", "0.0.0.0")
+	if err != nil {
+		conn, err = icmp.ListenPacket("ip4:icmp", "0.0.0.0")
+		if err != nil {
+			return nil, fmt.Errorf("cannot open ICMP socket: %w", err)
+		}
 	}
+	defer conn.Close()
 
-	host.mu.Lock()
-	originalStatus := host.Status
-	if host.Status != StatusScanning { // Don't interrupt nmap scan status
-		host.Status = StatusScanning // Tentative status while pinging
-	}
-	host.mu.Unlock()
-
-	var cmd *exec.Cmd
+	icmpID := os.Getpid() & 0xFFFF
 	timeout := time.Duration(nm.config.PingTimeoutMs) * time.Millisecond
+	if timeout < 2*time.Second {
+		timeout = 2 * time.Second
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout+200*time.Millisecond) // Add buffer for command overhead
-	defer cancel()
+	seqToIP := make(map[int]string, len(ips))
+	results := make(map[string]icmpScanResult, len(ips))
 
-	switch runtime.GOOS {
-	case "windows":
-		// -n 1: send 1 echo request
-		// -w timeout_ms: timeout in milliseconds to wait for each reply
-		cmd = exec.CommandContext(ctx, "ping", "-n", "1", "-w", fmt.Sprintf("%d", nm.config.PingTimeoutMs), ipStr)
-	default: // Linux, macOS
-		// -c 1: send 1 echo request
-		// -W timeout_seconds (for Linux ping) / -t timeout_seconds (for macOS ping)
-		// Using a short deadline with -c 1 is often more reliable across Unix-likes
-		deadline := time.Now().Add(timeout).Unix()
-		if runtime.GOOS == "darwin" {
-			cmd = exec.CommandContext(ctx, "ping", "-c", "1", "-t", fmt.Sprintf("%d", int(timeout.Seconds())+1), ipStr)
-		} else { // Assuming Linux
-			cmd = exec.CommandContext(ctx, "ping", "-c", "1", "-W", fmt.Sprintf("%d", int(timeout.Seconds())+1), "-i", "0.2", "-w", fmt.Sprintf("%d", deadline), ipStr)
+	sendStart := time.Now()
+	for i, ipStr := range ips {
+		seq := i + 1
+		seqToIP[seq] = ipStr
+
+		msg := &icmp.Message{
+			Type: ipv4.ICMPTypeEcho,
+			Code: 0,
+			Body: &icmp.Echo{
+				ID:   icmpID,
+				Seq:  seq,
+				Data: []byte("SCAN"),
+			},
+		}
+		msgBytes, err := msg.Marshal(nil)
+		if err != nil {
+			continue
+		}
+
+		dst := &net.UDPAddr{IP: net.ParseIP(ipStr)}
+		conn.WriteTo(msgBytes, dst)
+
+		if (i+1)%50 == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	log.Printf("Sent %d ICMP Echo Requests in %v", len(ips), time.Since(sendStart))
+
+	replied := 0
+	deadline := time.Now().Add(timeout)
+	conn.SetReadDeadline(deadline)
+	buf := make([]byte, 1500)
+
+	for replied < len(ips) && time.Now().Before(deadline) {
+		n, peer, err := conn.ReadFrom(buf)
+		if err != nil {
+			break
+		}
+
+		var proto int
+		if _, ok := peer.(*net.UDPAddr); ok {
+			proto = 1
+		} else {
+			proto = 1
+		}
+
+		msg, err := icmp.ParseMessage(proto, buf[:n])
+		if err != nil {
+			continue
+		}
+
+		if msg.Type != ipv4.ICMPTypeEchoReply {
+			continue
+		}
+
+		echo, ok := msg.Body.(*icmp.Echo)
+		if !ok || echo.ID != icmpID {
+			continue
+		}
+
+		ipStr, found := seqToIP[echo.Seq]
+		if !found {
+			continue
+		}
+
+		var peerIP string
+		switch addr := peer.(type) {
+		case *net.UDPAddr:
+			peerIP = addr.IP.String()
+		case *net.IPAddr:
+			peerIP = addr.IP.String()
+		}
+		if peerIP != ipStr {
+			continue
+		}
+
+		if !results[ipStr].Alive {
+			replied++
+			results[ipStr] = icmpScanResult{
+				Alive: true,
+				RTT:   time.Since(sendStart),
+			}
 		}
 	}
 
-	err := cmd.Run()
-
-	host.mu.Lock()
-	defer host.mu.Unlock()
-
-	if ctx.Err() == context.DeadlineExceeded {
-		if host.Status != StatusScanning || originalStatus != StatusScanning { // Only change if not in nmap scan
-			host.Status = StatusOffline
-		}
-		log.Printf("Ping timeout for %s", ipStr)
-	} else if err != nil {
-		if host.Status != StatusScanning || originalStatus != StatusScanning {
-			host.Status = StatusOffline
-		}
-		// log.Printf("Ping failed for %s: %v", ipStr, err) // Can be noisy
-	} else {
-		host.Status = StatusOnline
-		host.LastSeen = time.Now()
-		// Attempt to resolve hostname if it's not set or was N/A
-		if host.Hostname == "" || host.Hostname == "N/A" {
-			go nm.resolveHostname(host) // Run in goroutine to not block ping
-		}
-	}
+	log.Printf("Received %d ICMP Echo Replies", replied)
+	return results, nil
 }
 
-func (nm *NetworkMonitor) resolveHostname(host *MonitoredHost) {
-	names, err := net.LookupAddr(host.IP)
-	host.mu.Lock()
-	defer host.mu.Unlock()
-	if err == nil && len(names) > 0 {
-		host.Hostname = strings.TrimSuffix(names[0], ".")
-	} else {
-		host.Hostname = "N/A"
-		// log.Printf("Could not resolve hostname for %s: %v", host.IP, err)
+func (nm *NetworkMonitor) tcpProbeHosts(ips []string) map[string]icmpScanResult {
+	results := make(map[string]icmpScanResult, len(ips))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrentPings)
+	timeout := time.Duration(nm.config.PingTimeoutMs) * time.Millisecond
+	if timeout < 1*time.Second {
+		timeout = 1 * time.Second
 	}
+	probePorts := []string{"22", "80", "443", "53", "445", "8080", "3389", "8443", "5000", "8123"}
+
+	for _, ipStr := range ips {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(ip string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			for _, port := range probePorts {
+				conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, port), timeout)
+				if err == nil {
+					conn.Close()
+					mu.Lock()
+					results[ip] = icmpScanResult{Alive: true}
+					mu.Unlock()
+					return
+				}
+			}
+		}(ipStr)
+	}
+	wg.Wait()
+	return results
+}
+
+func (r icmpScanResult) RTTString() string {
+	if !r.Alive {
+		return "N/A"
+	}
+	return r.RTT.Round(time.Microsecond).String()
 }
 
 func (nm *NetworkMonitor) performNmapScanForAllOnlineHosts() {
@@ -341,7 +513,7 @@ func (nm *NetworkMonitor) performNmapScanForAllOnlineHosts() {
 	nm.mu.RLock()
 	for _, host := range nm.hosts {
 		host.mu.RLock()
-		if host.Status == StatusOnline || host.Status == StatusScanning { // Also include hosts currently marked scanning by ping
+		if host.Status == StatusOnline || host.Status == StatusScanning {
 			onlineHostsToScan = append(onlineHostsToScan, host)
 		}
 		host.mu.RUnlock()
@@ -362,7 +534,7 @@ func (nm *NetworkMonitor) performNmapScanForAllOnlineHosts() {
 
 func (nm *NetworkMonitor) scanHostWithNmap(host *MonitoredHost) {
 	host.mu.Lock()
-	if host.Status == StatusOffline { // Check again before scan
+	if host.Status == StatusOffline {
 		host.mu.Unlock()
 		return
 	}
@@ -389,11 +561,11 @@ func (nm *NetworkMonitor) scanHostWithNmap(host *MonitoredHost) {
 	host.mu.Lock()
 	defer host.mu.Unlock()
 
-	host.LastNmapScan = time.Now()
+	host.LastPortScan = time.Now()
 
 	if ctx.Err() == context.DeadlineExceeded {
 		log.Printf("Nmap scan timed out for %s", host.IP)
-		host.Status = StatusError // Keep host as error if nmap timed out
+		host.Status = StatusError
 		host.OpenPorts = []string{"Nmap Timeout"}
 		return
 	} else if err != nil {
@@ -403,9 +575,8 @@ func (nm *NetworkMonitor) scanHostWithNmap(host *MonitoredHost) {
 		return
 	}
 
-	// If nmap ran successfully, host is at least online from nmap's perspective
 	host.Status = StatusOnline
-	host.LastSeen = time.Now() // Update last seen from nmap successful scan
+	host.LastSeen = time.Now()
 
 	output := outbuf.String()
 	var ports []string
@@ -420,11 +591,106 @@ func (nm *NetworkMonitor) scanHostWithNmap(host *MonitoredHost) {
 		}
 	}
 	host.OpenPorts = ports
-	if host.Hostname == "" || host.Hostname == "N/A" {
-		// Nmap might have resolved the hostname, or we can try again.
-		// For simplicity, we rely on the ping-triggered resolve or nmap's own output if parsed.
-		// Nmap output parsing for hostname can be added here if needed.
-		go nm.resolveHostname(host) // Re-try resolve if still N/A
-	}
 	log.Printf("Nmap scan for %s complete. Ports: %v", host.IP, ports)
+}
+
+func (nm *NetworkMonitor) performTCPPortScan() {
+	nm.portScanMu.Lock()
+	if nm.isPortScanning {
+		nm.portScanMu.Unlock()
+		log.Println("TCP port scan already in progress. Skipping.")
+		return
+	}
+	nm.isPortScanning = true
+	nm.portScanMu.Unlock()
+
+	defer func() {
+		nm.portScanMu.Lock()
+		nm.isPortScanning = false
+		nm.portScanMu.Unlock()
+	}()
+
+	cooldown := time.Duration(nm.config.PortScanInterval) * time.Second
+	now := time.Now()
+
+	var hostsToScan []*MonitoredHost
+	nm.mu.RLock()
+	for _, host := range nm.hosts {
+		host.mu.RLock()
+		if host.Status == StatusOnline && (host.LastPortScan.IsZero() || now.Sub(host.LastPortScan) >= cooldown) {
+			hostsToScan = append(hostsToScan, host)
+		}
+		host.mu.RUnlock()
+	}
+	nm.mu.RUnlock()
+
+	if len(hostsToScan) == 0 {
+		return
+	}
+
+	log.Printf("Starting TCP port scan for %d host(s)...", len(hostsToScan))
+	sem := make(chan struct{}, maxConcurrentPortScanHosts)
+	var wg sync.WaitGroup
+
+	for _, host := range hostsToScan {
+		select {
+		case <-nm.stopChan:
+			log.Println("TCP port scan interrupted by shutdown.")
+			wg.Wait()
+			return
+		default:
+		}
+
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(h *MonitoredHost) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			nm.scanHostTCPPorts(h)
+		}(host)
+	}
+	wg.Wait()
+	log.Println("TCP port scan cycle finished.")
+}
+
+func (nm *NetworkMonitor) scanHostTCPPorts(host *MonitoredHost) {
+	host.mu.Lock()
+	if host.Status != StatusOnline {
+		host.mu.Unlock()
+		return
+	}
+	host.Status = StatusScanning
+	host.mu.Unlock()
+
+	timeout := time.Duration(nm.config.PortScanTimeoutMs) * time.Millisecond
+	var openPorts []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrentDialsPerHost)
+
+	for _, port := range defaultScanPorts {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(p int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			addr := net.JoinHostPort(host.IP, fmt.Sprintf("%d", p))
+			conn, err := net.DialTimeout("tcp", addr, timeout)
+			if err == nil {
+				conn.Close()
+				mu.Lock()
+				openPorts = append(openPorts, fmt.Sprintf("%d", p))
+				mu.Unlock()
+			}
+		}(port)
+	}
+	wg.Wait()
+
+	host.mu.Lock()
+	host.OpenPorts = openPorts
+	host.LastPortScan = time.Now()
+	host.Status = StatusOnline
+	host.mu.Unlock()
+
+	log.Printf("TCP port scan for %s complete. Open ports: %v", host.IP, openPorts)
 }

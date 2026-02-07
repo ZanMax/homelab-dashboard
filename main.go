@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -36,7 +39,7 @@ type ServerConfig struct {
 type AppConfig struct {
 	Server     ServerConfig     `yaml:"server"`
 	Groups     []Group          `yaml:"groups"`
-	NetMonitor NetMonitorConfig `yaml:"net_monitor"` // Added
+	NetMonitor NetMonitorConfig `yaml:"net_monitor"`
 }
 
 var appConfig AppConfig
@@ -44,16 +47,19 @@ var dashboardTemplate *template.Template
 
 func loadConfig(filePath string) (AppConfig, error) {
 	cfg := AppConfig{}
-	// Set defaults for NetMonitorConfig before loading
 	cfg.NetMonitor = NetMonitorConfig{
 		Enable:              true,
 		DefaultSubnet:       "192.168.1.0/24",
-		DefaultInterval:     5, // seconds for ping
+		DefaultInterval:     5,
 		NmapScanEnabled:     false,
-		NmapDefaultInterval: 300,      // seconds for nmap
-		NmapCommandArgs:     "-T4 -F", // nmap arguments
-		NmapHostTimeout:     300,      // seconds for nmap host timeout
-		PingTimeoutMs:       500,      // ms for ping
+		NmapDefaultInterval: 300,
+		NmapCommandArgs:     "-T4 -F",
+		NmapHostTimeout:     300,
+		PingTimeoutMs:       500,
+		PortScanEnabled:     true,
+		PortScanInterval:    300,
+		PortScanTimeoutMs:   2000,
+		OfflineThreshold:    3,
 	}
 
 	data, err := os.ReadFile(filePath)
@@ -72,9 +78,8 @@ func loadConfig(filePath string) (AppConfig, error) {
 	if cfg.Server.Port == "" {
 		cfg.Server.Port = "8080"
 	}
-	// Ensure net_monitor substruct has some defaults if not fully defined in yaml
 	if cfg.NetMonitor.DefaultInterval == 0 && cfg.NetMonitor.Enable {
-		cfg.NetMonitor.DefaultInterval = 5 // Sensible default if enabled but interval not set
+		cfg.NetMonitor.DefaultInterval = 5
 	}
 	if cfg.NetMonitor.PingTimeoutMs == 0 && cfg.NetMonitor.Enable {
 		cfg.NetMonitor.PingTimeoutMs = 500
@@ -100,8 +105,19 @@ func basicAuthMiddleware(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func securityHeadersMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'")
+		next(w, r)
+	}
+}
+
 func dashboardHandler(w http.ResponseWriter, r *http.Request) {
-	err := dashboardTemplate.Execute(w, appConfig) // Pass the whole appConfig
+	err := dashboardTemplate.Execute(w, appConfig)
 	if err != nil {
 		log.Printf("Error executing template: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -132,18 +148,15 @@ func main() {
 		log.Println("update the 'hashedPassword' field in 'config.yaml'.")
 		log.Println("--------------------------------------------------------------------")
 		log.Fatal("Exiting due to insecure password configuration.")
-		return
 	}
 
-	// Initialize and start the network monitor
 	if appConfig.NetMonitor.Enable {
 		monitor, err := NewNetworkMonitor(appConfig.NetMonitor)
 		if err != nil {
 			log.Fatalf("Failed to initialize network monitor: %v", err)
 		}
-		globalNetworkMonitor = monitor // Assign to global
+		globalNetworkMonitor = monitor
 		monitor.Start()
-		defer monitor.Stop() // Ensure it stops cleanly on exit
 		log.Println("Network monitor initialized and started.")
 	} else {
 		log.Println("Network monitor is disabled in config.")
@@ -171,12 +184,39 @@ func main() {
 		log.Fatalf("Failed to parse HTML template from %s: %v", templatePath, err)
 	}
 
-	http.HandleFunc("/", basicAuthMiddleware(dashboardHandler))
-	http.HandleFunc("/api/netmonitor/status", basicAuthMiddleware(netMonitorApiHandler)) // API endpoint
+	http.HandleFunc("/", securityHeadersMiddleware(basicAuthMiddleware(dashboardHandler)))
+	http.HandleFunc("/api/netmonitor/status", securityHeadersMiddleware(basicAuthMiddleware(netMonitorApiHandler)))
 
-	log.Printf("Starting Simple Homelab Dashboard on port %s", appConfig.Server.Port)
-	log.Printf("Access at http://localhost:%s", appConfig.Server.Port)
-	if err := http.ListenAndServe(":"+appConfig.Server.Port, nil); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	server := &http.Server{
+		Addr:         ":" + appConfig.Server.Port,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
+
+	go func() {
+		log.Printf("Starting Simple Homelab Dashboard on port %s", appConfig.Server.Port)
+		log.Printf("Access at http://localhost:%s", appConfig.Server.Port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
+	}
+
+	if globalNetworkMonitor != nil {
+		globalNetworkMonitor.Stop()
+	}
+
+	log.Println("Server exited gracefully.")
 }

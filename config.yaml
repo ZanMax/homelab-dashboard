@@ -1,6 +1,6 @@
 server:
   port: "8080"
-  hashedPassword: "bcrypt_password_here" # Use bcrypt hash for password
+  hashedPassword: "$2b$14$C9cua3inJS.OCv1sTXan1uWYqNmCqpake.9ktnAw1cy3BS.3CNcdu"
   username: "admin"
 
 groups:
@@ -39,11 +39,13 @@ groups:
 net_monitor:
   enable: true
   default_subnet: "192.168.1.0/24"
-  default_interval: 60 # Interval in seconds for ping scans
-  nmap_scan_enabled: true # Set to true to enable nmap port scanning (requires nmap installed)
-  nmap_default_interval: 300 # Interval in seconds for more intensive nmap scans (e.g., 5 minutes)
-  nmap_command_args: "-T4 -F" # nmap arguments for quick scan (e.g., Fast mode, top 100 ports)
-                               # For a more thorough but slower scan, consider: "-p- -sV"
-                               # For only ping scan and OS detection: "-sn -O" (requires root/admin)
-  nmap_host_timeout: 300 # Seconds before timing out an nmap scan per host
-  ping_timeout_ms: 500 # Milliseconds for individual ping timeout
+  default_interval: 60
+  nmap_scan_enabled: false
+  nmap_default_interval: 300
+  nmap_command_args: "-T4 -F"
+  nmap_host_timeout: 300
+  ping_timeout_ms: 500
+  port_scan_enabled: true
+  port_scan_interval: 300
+  port_scan_timeout_ms: 2000
+  offline_threshold: 3
